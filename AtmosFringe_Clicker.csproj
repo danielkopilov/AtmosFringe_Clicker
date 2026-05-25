@@ -6,6 +6,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <UseWindowsForms>true</UseWindowsForms>
+    <ApplicationDefaultFont>Segoe UI, 9pt</ApplicationDefaultFont>
   </PropertyGroup>
 
   <ItemGroup>

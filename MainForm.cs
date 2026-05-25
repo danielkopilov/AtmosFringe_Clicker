@@ -6,10 +6,13 @@ public class MainForm : Form
 {
     private WinButton _grabButton;
     private WinButton _openDCButton;
-    private RichTextBox _imageLabel;   // "Last saved image: N"
-    private RichTextBox _statusLabel;  // "Status: Done!"
+    private WinButton _browseFolderButton;
+    private RichTextBox _folderLabel;   // shows current save folder
+    private RichTextBox _imageLabel;    // "Last saved image: N"
+    private RichTextBox _statusLabel;   // "Status: Done!"
     private const string DeviceCenterPath = @"C:\CI Systems\CTE\DeviceCenter64\DeviceCenter_x64.exe";
-    private const string SaveFolder = @"C:\temp\rec\FullFrame";
+    private const string DefaultSaveFolder = @"C:\temp\rec\FullFrame";
+    private string _saveFolder = @"C:\temp\rec\FullFrame";
     private const string AtmosFringePath = @"C:\Program Files (x86)\AtmosFringe\AtmosFringe3_3.exe";
     private string _lastSavedFile = string.Empty;
 
@@ -51,26 +54,26 @@ public class MainForm : Form
     }
     #endregion
 
-    private static string GetNextSaveFileName()
+    private string GetNextSaveFileName()
     {
-        Directory.CreateDirectory(SaveFolder);
+        Directory.CreateDirectory(_saveFolder);
         int i = 1;
-        while (File.Exists(Path.Combine(SaveFolder, $"{i}.bmp"))) i++;
-        return $"{i}.bmp"; // filename only — dialog is already in the right folder
+        while (File.Exists(Path.Combine(_saveFolder, $"{i}.bmp"))) i++;
+        return $"{i}.bmp";
     }
 
-    private static string GetNextSaveFilePath()
+    private string GetNextSaveFilePath()
     {
-        Directory.CreateDirectory(SaveFolder);
+        Directory.CreateDirectory(_saveFolder);
         int i = 1;
-        while (File.Exists(Path.Combine(SaveFolder, $"{i}.bmp"))) i++;
-        return Path.Combine(SaveFolder, $"{i}.bmp");
+        while (File.Exists(Path.Combine(_saveFolder, $"{i}.bmp"))) i++;
+        return Path.Combine(_saveFolder, $"{i}.bmp");
     }
 
     public MainForm()
     {
         Text = "AtmosFringe Clicker";
-        Size = new Size(320, 250);
+        Size = new Size(320, 270);
         FormBorderStyle = FormBorderStyle.FixedSingle;
         MaximizeBox = false;
         StartPosition = FormStartPosition.CenterScreen;
@@ -93,28 +96,52 @@ public class MainForm : Form
         };
         _openDCButton.Click += OpenDCButton_Click;
 
-        // Row 1: "Last saved image: N"
+        _browseFolderButton = new WinButton
+        {
+            Text = "Browse Save Folder...",
+            Size = new Size(200, 32),
+            Location = new Point(55, 117),
+            Font = new Font("Segoe UI", 10)
+        };
+        _browseFolderButton.Click += BrowseFolderButton_Click;
+
+        // Shows the currently selected save folder path
+        _folderLabel = new RichTextBox
+        {
+            ReadOnly = true,
+            BorderStyle = BorderStyle.None,
+            BackColor = SystemColors.Control,
+            Size = new Size(280, 20),
+            Location = new Point(15, 158),
+            Font = new Font("Segoe UI", 8),
+            ScrollBars = RichTextBoxScrollBars.None,
+            TabStop = false,
+            WordWrap = true
+        };
+        SetFolderLabel(_saveFolder);
+
+        // Row: "Last saved image: N"
         _imageLabel = new RichTextBox
         {
             ReadOnly = true,
             BorderStyle = BorderStyle.None,
             BackColor = SystemColors.Control,
             Size = new Size(260, 22),
-            Location = new Point(20, 120),
+            Location = new Point(20, 182),
             Font = new Font("Segoe UI", 9),
             ScrollBars = RichTextBoxScrollBars.None,
             TabStop = false
         };
         SetImageLabel("-");
 
-        // Row 2: "Status: Ready"
+        // Row: "Status: Ready"
         _statusLabel = new RichTextBox
         {
             ReadOnly = true,
             BorderStyle = BorderStyle.None,
             BackColor = SystemColors.Control,
             Size = new Size(260, 22),
-            Location = new Point(20, 146),
+            Location = new Point(20, 204),
             Font = new Font("Segoe UI", 9),
             ScrollBars = RichTextBoxScrollBars.None,
             TabStop = false
@@ -123,8 +150,51 @@ public class MainForm : Form
 
         Controls.Add(_grabButton);
         Controls.Add(_openDCButton);
+        Controls.Add(_browseFolderButton);
+        Controls.Add(_folderLabel);
         Controls.Add(_imageLabel);
         Controls.Add(_statusLabel);
+    }
+
+    private void BrowseFolderButton_Click(object? sender, EventArgs e)
+    {
+        string? selected = null;
+        string startFolder = _saveFolder;
+
+        // Run on a dedicated STA thread — required for shell dialogs in some environments
+        var thread = new Thread(() =>
+        {
+            using var dlg = new OpenFileDialog
+            {
+                Title = "Select folder to save images",
+                InitialDirectory = startFolder,
+                FileName = "Select Folder",
+                Filter = "Folder|*.none",
+                CheckFileExists = false,
+                CheckPathExists = true,
+                ValidateNames = false
+            };
+            if (dlg.ShowDialog() == DialogResult.OK)
+                selected = Path.GetDirectoryName(dlg.FileName);
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        thread.Join();
+
+        if (selected != null)
+        {
+            _saveFolder = selected;
+            SetFolderLabel(_saveFolder);
+        }
+    }
+
+    private void SetFolderLabel(string folder)
+    {
+        _folderLabel.Clear();
+        _folderLabel.SelectionColor = Color.Black;
+        _folderLabel.AppendText("Save folder: ");
+        _folderLabel.SelectionColor = Color.Blue;
+        _folderLabel.AppendText(folder);
     }
 
     private void OpenDCButton_Click(object? sender, EventArgs e)
@@ -171,10 +241,10 @@ public class MainForm : Form
             SendKeys.SendWait("{ENTER}"); // Confirm selection
             await Task.Delay(100);
 
-            // Step 4: Determine the filename that will be saved
+            // Step 4: Determine the filename that will be saved and store it
             _lastSavedFile = GetNextSaveFilePath();
 
-            // Step 5: Handle Save As dialog on UI thread (SendKeys requires STA)
+            // Step 5: Handle Save As dialog — types _lastSavedFile full path into Device Center
             await HandleSaveAsDialog();
 
             // Update "Last saved image" label with the number (e.g. "75")
@@ -212,11 +282,15 @@ public class MainForm : Form
         // Bring dialog to foreground so SendKeys targets it
         ShowWindow(dialog, 9);
         SetForegroundWindow(dialog);
-        await Task.Delay(300);   // wait for dialog to fully accept input
+        await Task.Delay(300);
 
-        // Type just the filename — dialog is already in C:\temp\rec\FullFrame\
-        string fileName = GetNextSaveFileName();
-        SendKeys.SendWait(fileName);
+        // Use _lastSavedFile — already computed with the correct _saveFolder path
+        // Escape SendKeys special characters in the path
+        string escaped = _lastSavedFile
+            .Replace("{", "{{").Replace("}", "}}")
+            .Replace("(", "{(}").Replace(")", "{)}")
+            .Replace("[", "{[}").Replace("]", "{]}");
+        SendKeys.SendWait(escaped);
         await Task.Delay(150);
 
         // Enter to save + Enter again to confirm the extension change popup
