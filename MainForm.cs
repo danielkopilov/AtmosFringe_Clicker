@@ -1,12 +1,14 @@
 using System.Runtime.InteropServices;
 using System.Text;
 using WinButton = System.Windows.Forms.Button;
-using WinLabel = System.Windows.Forms.Label;
 
 public class MainForm : Form
 {
     private WinButton _grabButton;
-    private WinLabel _statusLabel;
+    private WinButton _openDCButton;
+    private RichTextBox _imageLabel;   // "Last saved image: N"
+    private RichTextBox _statusLabel;  // "Status: Done!"
+    private const string DeviceCenterPath = @"C:\CI Systems\CTE\DeviceCenter64\DeviceCenter_x64.exe";
     private const string SaveFolder = @"C:\temp\rec\FullFrame";
     private const string AtmosFringePath = @"C:\Program Files (x86)\AtmosFringe\AtmosFringe3_3.exe";
     private string _lastSavedFile = string.Empty;
@@ -68,7 +70,7 @@ public class MainForm : Form
     public MainForm()
     {
         Text = "AtmosFringe Clicker";
-        Size = new Size(300, 160);
+        Size = new Size(320, 250);
         FormBorderStyle = FormBorderStyle.FixedSingle;
         MaximizeBox = false;
         StartPosition = FormStartPosition.CenterScreen;
@@ -77,21 +79,64 @@ public class MainForm : Form
         {
             Text = "Grab",
             Size = new Size(200, 50),
-            Location = new Point(45, 20),
+            Location = new Point(55, 15),
             Font = new Font("Segoe UI", 14, FontStyle.Bold)
         };
         _grabButton.Click += GrabButton_Click;
 
-        _statusLabel = new WinLabel
+        _openDCButton = new WinButton
         {
-            Text = "Ready",
-            AutoSize = true,
-            Location = new Point(45, 85),
-            Font = new Font("Segoe UI", 9)
+            Text = "Open Device Center",
+            Size = new Size(200, 32),
+            Location = new Point(55, 75),
+            Font = new Font("Segoe UI", 10)
         };
+        _openDCButton.Click += OpenDCButton_Click;
+
+        // Row 1: "Last saved image: N"
+        _imageLabel = new RichTextBox
+        {
+            ReadOnly = true,
+            BorderStyle = BorderStyle.None,
+            BackColor = SystemColors.Control,
+            Size = new Size(260, 22),
+            Location = new Point(20, 120),
+            Font = new Font("Segoe UI", 9),
+            ScrollBars = RichTextBoxScrollBars.None,
+            TabStop = false
+        };
+        SetImageLabel("-");
+
+        // Row 2: "Status: Ready"
+        _statusLabel = new RichTextBox
+        {
+            ReadOnly = true,
+            BorderStyle = BorderStyle.None,
+            BackColor = SystemColors.Control,
+            Size = new Size(260, 22),
+            Location = new Point(20, 146),
+            Font = new Font("Segoe UI", 9),
+            ScrollBars = RichTextBoxScrollBars.None,
+            TabStop = false
+        };
+        SetStatus("Ready");
 
         Controls.Add(_grabButton);
+        Controls.Add(_openDCButton);
+        Controls.Add(_imageLabel);
         Controls.Add(_statusLabel);
+    }
+
+    private void OpenDCButton_Click(object? sender, EventArgs e)
+    {
+        try
+        {
+            System.Diagnostics.Process.Start(DeviceCenterPath);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message, "Could not open Device Center", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
     }
 
     // Entry point — runs on UI thread so SendKeys works
@@ -131,6 +176,10 @@ public class MainForm : Form
 
             // Step 5: Handle Save As dialog on UI thread (SendKeys requires STA)
             await HandleSaveAsDialog();
+
+            // Update "Last saved image" label with the number (e.g. "75")
+            string imageNumber = Path.GetFileNameWithoutExtension(_lastSavedFile);
+            SetImageLabel(imageNumber);
 
             // Step 6: Load the saved image in AtmosFringe
             SetStatus("Loading in AtmosFringe...");
@@ -379,7 +428,21 @@ public class MainForm : Form
 
     private void SetStatus(string msg)
     {
-        if (_statusLabel.InvokeRequired) _statusLabel.Invoke(() => _statusLabel.Text = msg);
-        else _statusLabel.Text = msg;
+        if (_statusLabel.InvokeRequired) { _statusLabel.Invoke(() => SetStatus(msg)); return; }
+        _statusLabel.Clear();
+        _statusLabel.SelectionColor = Color.Black;
+        _statusLabel.AppendText("Status: ");
+        _statusLabel.SelectionColor = Color.Blue;
+        _statusLabel.AppendText(msg);
+    }
+
+    private void SetImageLabel(string imageNumber)
+    {
+        if (_imageLabel.InvokeRequired) { _imageLabel.Invoke(() => SetImageLabel(imageNumber)); return; }
+        _imageLabel.Clear();
+        _imageLabel.SelectionColor = Color.Black;
+        _imageLabel.AppendText("Last saved image: ");
+        _imageLabel.SelectionColor = Color.Blue;
+        _imageLabel.AppendText(imageNumber);
     }
 }
