@@ -5,3 +5,6 @@
 # Build output
 bin/
 obj/
+
+# Publish output (too large for GitHub)
+publish/
