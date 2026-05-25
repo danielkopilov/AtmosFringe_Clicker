@@ -1,0 +1,7 @@
+# VS files
+.vs/
+*.user
+
+# Build output
+bin/
+obj/
