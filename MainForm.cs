@@ -24,16 +24,28 @@ public class MainForm : Form
     [DllImport("user32.dll")] static extern bool PostMessage(IntPtr hWnd, uint msg, IntPtr w, IntPtr l);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     static extern IntPtr SendMessage(IntPtr hWnd, uint msg, IntPtr w, string l);
+    [DllImport("user32.dll", EntryPoint = "SendMessageW")]
+    static extern IntPtr SendMessagePtr(IntPtr hWnd, uint msg, IntPtr w, IntPtr l);
+    [DllImport("user32.dll")] static extern int GetDlgCtrlID(IntPtr hWnd);
+    [DllImport("user32.dll")] static extern IntPtr GetDlgItem(IntPtr hDlg, int nIDDlgItem);
+    [DllImport("user32.dll")] static extern bool SetFocus(IntPtr hWnd);
 
-    const uint WM_SETTEXT = 0x000C;
-    const uint WM_KEYDOWN = 0x0100;
-    const uint WM_KEYUP   = 0x0101;
-    const uint GA_ROOT    = 2;
+    const uint WM_SETTEXT  = 0x000C;
+    const uint WM_KEYDOWN  = 0x0100;
+    const uint WM_KEYUP    = 0x0101;
+    const uint BM_CLICK    = 0x00F5;
+    const uint GA_ROOT     = 2;
+    const ushort VK_CONTROL = 0x11;
+    // Standard control IDs inside a Windows IFileOpenDialog / GetOpenFileName dialog
+    const int FILENAME_COMBO_ID = 0x047C;   // filename ComboBoxEx32
+    const int OPEN_BUTTON_ID    = 0x0001;   // "Open" / "OK" button
 
-    static void PostKey(IntPtr hWnd, ushort vk)
+    static void PostKey(IntPtr hWnd, ushort vk, bool ctrl = false)
     {
+        if (ctrl) PostMessage(hWnd, WM_KEYDOWN, (IntPtr)VK_CONTROL, IntPtr.Zero);
         PostMessage(hWnd, WM_KEYDOWN, (IntPtr)vk, IntPtr.Zero);
         PostMessage(hWnd, WM_KEYUP,   (IntPtr)vk, IntPtr.Zero);
+        if (ctrl) PostMessage(hWnd, WM_KEYUP, (IntPtr)VK_CONTROL, IntPtr.Zero);
     }
     #endregion
 
@@ -190,25 +202,41 @@ public class MainForm : Form
         if (afWnd == IntPtr.Zero)
             throw new InvalidOperationException("Could not find or launch AtmosFringe.");
 
-        // Snapshot windows BEFORE opening the menu
-        var windowsBefore = GetAllTopLevelWindowHandles();
+        // Retry loop: send Alt+F → Enter, then wait up to 3s for the dialog to appear.
+        // On first launch the app may still be initializing so keystrokes can be swallowed —
+        // retry up to 5 times until HandleOpenDialog confirms the dialog is visible.
+        bool dialogOpened = false;
+        for (int attempt = 0; attempt < 5 && !dialogOpened; attempt++)
+        {
+            // Bring AtmosFringe to foreground
+            ShowWindow(afWnd, 9);
+            SetForegroundWindow(afWnd);
+            await Task.Delay(200);
+            SetForegroundWindow(afWnd);
+            await Task.Delay(200);
 
-        // Bring AtmosFringe to foreground — same pattern that works for Device Center
-        ShowWindow(afWnd, 9);
-        SetForegroundWindow(afWnd);
-        await Task.Delay(150);
-        SetForegroundWindow(afWnd);
-        await Task.Delay(150);
+            // Alt+F opens File menu, Enter selects the first (already highlighted) item
+            SendKeys.SendWait("%F");
+            await Task.Delay(150);
+            SendKeys.SendWait("{ENTER}");
+            await Task.Delay(150);
 
-        // Alt+F opens File menu with "Load Image" already highlighted (first item)
-        // Press Enter immediately — no DOWN needed
-        SendKeys.SendWait("%F");
-        await Task.Delay(100);
-        SendKeys.SendWait("{ENTER}");
-        await Task.Delay(100);
+            // Check if the dialog appeared (quick poll, 3s max)
+            dialogOpened = await Task.Run(() => WaitForOpenDialog(3000));
 
-        // Handle the Open dialog on background thread
-        await Task.Run(() => HandleOpenDialog(filePath, windowsBefore));
+            if (!dialogOpened)
+            {
+                // Dismiss any partially-open menu before retrying
+                SendKeys.SendWait("{ESC}");
+                await Task.Delay(200);
+            }
+        }
+
+        if (!dialogOpened)
+            throw new InvalidOperationException("AtmosFringe Load Image dialog did not appear after retries.");
+
+        // Dialog is confirmed open — fill in the path on the UI thread
+        await HandleOpenDialog(filePath);
     }
 
     private HashSet<IntPtr> GetAllTopLevelWindowHandles()
@@ -218,87 +246,69 @@ public class MainForm : Form
         return set;
     }
 
-    private void HandleOpenDialog(string filePath, HashSet<IntPtr> windowsBefore)
+    // Polls for the Load Interferogram dialog. Returns true as soon as it appears,
+    // false if it does not appear within timeoutMs.
+    private bool WaitForOpenDialog(int timeoutMs)
     {
-        IntPtr dialog = IntPtr.Zero;
-        string foundTitle = "";
         var sb = new StringBuilder(256);
-
-        for (int i = 0; i < 100; i++)
+        int elapsed = 0;
+        while (elapsed < timeoutMs)
         {
-            // Strategy 1: new top-level window with a non-empty title
+            IntPtr found = IntPtr.Zero;
             EnumWindows((hWnd, _) =>
             {
-                if (!windowsBefore.Contains(hWnd))
-                {
-                    GetWindowText(hWnd, sb, 256);
-                    var t = sb.ToString();
-                    // Must have a real title — skip phantom empty-title windows
-                    if (t.Length > 0)
-                    { foundTitle = t; dialog = hWnd; return false; }
-                }
-                // Also check if already-existing windows now have a child dialog
-                // (AtmosFringe opens "Load Interferogram Image" as owned by its main window)
-                EnumChildWindows(hWnd, (child, _) =>
-                {
-                    if (!windowsBefore.Contains(child))
-                    {
-                        GetWindowText(child, sb, 256);
-                        var t = sb.ToString();
-                        if (t.Contains("Load", StringComparison.OrdinalIgnoreCase) ||
-                            t.Contains("Open", StringComparison.OrdinalIgnoreCase) ||
-                            t.Contains("Image", StringComparison.OrdinalIgnoreCase))
-                        { foundTitle = t; dialog = child; return false; }
-                    }
-                    return true;
-                }, IntPtr.Zero);
-                return dialog == IntPtr.Zero;
+                GetWindowText(hWnd, sb, 256);
+                var t = sb.ToString();
+                if (t.Contains("Load Interferogram", StringComparison.OrdinalIgnoreCase) ||
+                    t.Contains("Load Image", StringComparison.OrdinalIgnoreCase) ||
+                    t.Contains("Open Image", StringComparison.OrdinalIgnoreCase))
+                { found = hWnd; return false; }
+                return true;
             }, IntPtr.Zero);
+            if (found != IntPtr.Zero) return true;
+            Thread.Sleep(50);
+            elapsed += 50;
+        }
+        return false;
+    }
 
-
-
+    private async Task HandleOpenDialog(string filePath)
+    {
+        // Locate the dialog window
+        IntPtr dialog = IntPtr.Zero;
+        var sb = new StringBuilder(256);
+        for (int i = 0; i < 40; i++)
+        {
+            EnumWindows((hWnd, _) =>
+            {
+                GetWindowText(hWnd, sb, 256);
+                var t = sb.ToString();
+                if (t.Contains("Load Interferogram", StringComparison.OrdinalIgnoreCase) ||
+                    t.Contains("Load Image", StringComparison.OrdinalIgnoreCase) ||
+                    t.Contains("Open Image", StringComparison.OrdinalIgnoreCase))
+                { dialog = hWnd; return false; }
+                return true;
+            }, IntPtr.Zero);
             if (dialog != IntPtr.Zero) break;
-            Thread.Sleep(30);
+            await Task.Delay(50);
         }
-
         if (dialog == IntPtr.Zero)
-        {
-            var info = new StringBuilder("AtmosFringe Open dialog did not appear.\n\nAll top-level windows:\n");
-            var sb4 = new StringBuilder(256);
-            EnumWindows((hWnd, _) =>
-            {
-                GetWindowText(hWnd, sb4, 256);
-                var t = sb4.ToString();
-                bool isNew = !windowsBefore.Contains(hWnd);
-                if (t.Length > 0) info.AppendLine($"  {(isNew ? "[NEW] " : "      ")}'{t}'");
-                return true;
-            }, IntPtr.Zero);
-            throw new InvalidOperationException(info.ToString());
-        }
+            throw new InvalidOperationException("AtmosFringe Open dialog did not appear.");
 
+        // Bring dialog to foreground so SendKeys targets it
+        ShowWindow(dialog, 9);
         SetForegroundWindow(dialog);
-        Thread.Sleep(30);
+        await Task.Delay(300);   // let it fully paint and accept input
 
-        IntPtr edit = FindChildByClass(dialog, "Edit");
-        if (edit == IntPtr.Zero)
-        {
-            // Dump all child controls for diagnosis
-            var info = new StringBuilder($"Could not find Edit in dialog: '{foundTitle}'\n\nChild controls:\n");
-            var sb2 = new StringBuilder(256);
-            EnumChildWindows(dialog, (child, _) =>
-            {
-                var cls = new StringBuilder(64);
-                GetClassName(child, cls, 64);
-                GetWindowText(child, sb2, 256);
-                info.AppendLine($"  Class:'{cls}' Text:'{sb2}'");
-                return true;
-            }, IntPtr.Zero);
-            throw new InvalidOperationException(info.ToString());
-        }
+        // Type the full path directly into the File name field — works on any Windows file dialog.
+        // Escape any SendKeys special chars in the path (brackets, etc.)
+        string escaped = filePath.Replace("{", "{{").Replace("}", "}}");
+        SendKeys.SendWait(escaped);
+        await Task.Delay(150);
 
-        SendMessage(edit, WM_SETTEXT, IntPtr.Zero, filePath);
-        Thread.Sleep(20);
-        PostKey(dialog, 0x0D); // Enter to confirm
+        // Press Enter — same as clicking Open
+        SendKeys.SendWait("{ENTER}");
+        await Task.Delay(150);
     }
 
     private static bool IsOpenDialogTitle(string t) =>
