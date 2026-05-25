@@ -129,8 +129,8 @@ public class MainForm : Form
             // Step 4: Determine the filename that will be saved
             _lastSavedFile = GetNextSaveFilePath();
 
-            // Step 5: Handle Save As dialog on background thread
-            await Task.Run(HandleSaveAsDialog);
+            // Step 5: Handle Save As dialog on UI thread (SendKeys requires STA)
+            await HandleSaveAsDialog();
 
             // Step 6: Load the saved image in AtmosFringe
             SetStatus("Loading in AtmosFringe...");
@@ -146,35 +146,35 @@ public class MainForm : Form
         finally { _grabButton.Enabled = true; }
     }
 
-    private void HandleSaveAsDialog()
+    private async Task HandleSaveAsDialog()
     {
-        // Wait for Save As dialog — poll every 30ms, max 3s
+        // Poll for the Save As dialog — max 3 seconds
         IntPtr dialog = IntPtr.Zero;
         for (int i = 0; i < 100; i++)
         {
             dialog = FindSaveAsDialog();
             if (dialog != IntPtr.Zero) break;
-            Thread.Sleep(30);
+            await Task.Delay(30);
         }
 
         if (dialog == IntPtr.Zero)
             throw new InvalidOperationException("Save As dialog did not appear.");
 
+        // Bring dialog to foreground so SendKeys targets it
+        ShowWindow(dialog, 9);
         SetForegroundWindow(dialog);
-        Thread.Sleep(30);
+        await Task.Delay(300);   // wait for dialog to fully accept input
 
-        // Write filename directly into Edit control — no typing simulation
-        IntPtr edit = FindChildByClass(dialog, "Edit");
-        if (edit == IntPtr.Zero)
-            throw new InvalidOperationException("Could not find file name field.");
+        // Type just the filename — dialog is already in C:\temp\rec\FullFrame\
+        string fileName = GetNextSaveFileName();
+        SendKeys.SendWait(fileName);
+        await Task.Delay(150);
 
-        SendMessage(edit, WM_SETTEXT, IntPtr.Zero, GetNextSaveFileName());
-        Thread.Sleep(20);
-
-        // Enter to save + Enter to confirm extension popup
-        PostKey(dialog, 0x0D);
-        Thread.Sleep(80);
-        PostKey(dialog, 0x0D);
+        // Enter to save + Enter again to confirm the extension change popup
+        SendKeys.SendWait("{ENTER}");
+        await Task.Delay(150);
+        SendKeys.SendWait("{ENTER}");
+        await Task.Delay(150);
     }
 
     private async Task LoadInAtmosFringe(string filePath)
